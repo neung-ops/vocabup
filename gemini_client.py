@@ -7,7 +7,7 @@ def get_client():
     import streamlit as st
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-1.5-flash")
+    return genai.GenerativeModel("gemini-2.0-flash")
 
 def generate_word_question(exclude_words: list[str] = []) -> dict:
     """
