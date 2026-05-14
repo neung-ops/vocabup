@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 import google.generativeai as genai
 
 def get_client():
@@ -47,6 +48,7 @@ Rules:
 """
 
     model = get_client()
+    time.sleep(2)
     response = model.generate_content(prompt)
     text = response.text.strip()
 
