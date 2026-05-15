@@ -39,8 +39,7 @@ def auto_add_word(word, level="B2"):
             pron = res.get('phonetic', next((p.get('text') for p in res.get('phonetics', []) if p.get('text')), "/.../"))
             meaning = res['meanings'][0]
             pos = meaning['partOfSpeech']
-            # ดึง Example ออกมา
-            ex = meaning['definitions'][0].get('example', 'Commonly used in professional contexts.')
+            ex = meaning['definitions'][0].get('example', 'Used in professional contexts.')
         translation = GoogleTranslator(source='en', target='th').translate(word)
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
@@ -78,7 +77,6 @@ def update_srs(word_id, success):
 # --- 2. UI SETUP ---
 st.set_page_config(page_title="Typist Lexicon Pro", layout="wide")
 
-# JavaScript: ปิดบับเบิ้ล และ บังคับ Focus
 st.markdown("""
     <script>
     function setupInput() {
@@ -90,9 +88,7 @@ st.markdown("""
                 input.setAttribute('autocorrect', 'off');
                 input.setAttribute('spellcheck', 'false');
                 input.style.userSelect = 'none'; 
-                if (window.parent.document.activeElement !== input) {
-                    input.focus();
-                }
+                if (window.parent.document.activeElement !== input) { input.focus(); }
             }
         });
     }
@@ -100,31 +96,25 @@ st.markdown("""
     </script>
 """, unsafe_allow_html=True)
 
-# CSS: สีตาราง, สีปุ่ม, และสไตล์ Card
 st.markdown("""
     <style>
     .stApp { background-color: #0F172A; color: #F1F5F9; }
-    .main-card { background: #1E293B; border-radius: 24px; padding: 3rem; border: 1px solid #334155; text-align: center; }
+    .main-card { background: #1E293B; border-radius: 24px; padding: 2.5rem; border: 1px solid #334155; text-align: center; }
     .word-title { font-size: 5rem; font-weight: 900; color: #38BDF8; margin: 0; letter-spacing: -2px; }
     .trans-txt { font-size: 2.2rem; color: #F8FAFC; margin-bottom: 20px; font-weight: 600; }
-    .example-quote { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 5px solid #38BDF8; text-align: left; font-style: italic; color: #CBD5E1; margin-top: 20px; }
+    .example-quote { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 5px solid #38BDF8; text-align: left; font-style: italic; color: #CBD5E1; }
     
-    /* แก้สีตาราง Favorites */
-    [data-testid="stTable"] { color: #FFFFFF !important; }
-    [data-testid="stTable"] td { color: #FFFFFF !important; background-color: #1E293B !important; }
-    [data-testid="stTable"] th { color: #38BDF8 !important; background-color: #0F172A !important; }
-
-    /* ปุ่มสีขาว ตัวดำ */
     div.stButton > button {
         background-color: #FFFFFF !important;
         color: #0F172A !important;
-        border-radius: 12px;
-        font-weight: bold;
-        border: none;
+        border-radius: 12px; font-weight: bold; border: none;
     }
-    div.stButton > button:hover {
-        background-color: #38BDF8 !important;
-        color: #FFFFFF !important;
+    div.stButton > button:hover { background-color: #38BDF8 !important; color: #FFFFFF !important; }
+    
+    /* ปุ่มลบสีแดง */
+    .del-btn > div > button {
+        background-color: #EF4444 !important;
+        color: white !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -157,15 +147,12 @@ with tab1:
                     <div class="example-quote">" {curr['example']} "</div>
                 </div>""", unsafe_allow_html=True)
             _, c2, _ = st.columns([1,2,1])
-            st.write("")
             u_input = c2.text_input(f"Type: ({st.session_state.idx+1}/{len(st.session_state.session_words)})", key=f"t_{curr['id']}_{st.session_state.idx}")
-            
             if c2.button("⭐ Save to Fav", key=f"f_{curr['id']}"):
                 nc = sqlite3.connect(DB_NAME); cur = nc.cursor()
                 cur.execute("UPDATE vocab SET is_favorite = ? WHERE id = ?", (1 if curr['is_favorite']==0 else 0, curr['id']))
                 nc.commit(); nc.close(); st.rerun()
-
-            if u_input.strip().lower() == curr['word'].lower():
+            if u_input.strip().lower() == curr['word'].strip().lower():
                 st.session_state.idx += 1
                 if st.session_state.idx >= len(st.session_state.session_words): st.session_state.phase = "quiz"
                 st.rerun()
@@ -179,35 +166,50 @@ with tab1:
             cols = st.columns(2)
             for i, o in enumerate(opts):
                 if cols[i%2].button(o, key=f"q_{i}_{qz['id']}", use_container_width=True):
-                    if o == qz['translation']:
+                    if o.strip() == qz['translation'].strip():
                         update_srs(qz['id'], True); st.session_state.quiz_idx += 1
                         if st.session_state.quiz_idx >= len(st.session_state.session_words):
-                            st.balloons(); st.session_state.session_words = []; st.toast("Done!"); time.sleep(1)
+                            st.balloons(); st.session_state.session_words = []; st.toast("Done!")
+                            time.sleep(1)
                         st.rerun()
                     else:
                         update_srs(qz['id'], False); st.error("Wrong!"); time.sleep(1)
                         st.session_state.phase, st.session_state.idx, st.session_state.quiz_idx = "typing", 0, 0
                         st.rerun()
     else:
-        st.info("Daily session complete!")
-        if st.button("📦 Add New Words"):
+        st.info("No words left! Add more to continue.")
+        if st.button("📦 Add Words"):
             new_list = ["Innovative", "Collaboration", "Pragmatic", "Intuition", "Legacy"]
             for nw in new_list: auto_add_word(nw)
             st.rerun()
     conn.close()
 
 with tab2:
-    st.subheader("⭐ Favorites List")
+    st.subheader("⭐ My Favorite Words")
     conn = sqlite3.connect(DB_NAME)
-    df = pd.read_sql_query("SELECT word, translation FROM vocab WHERE is_favorite = 1", conn)
-    if not df.empty:
-        st.table(df)
-    else:
-        st.write("No favorite words yet.")
+    # ดึงข้อมูลมาแสดงเป็นแถวๆ เพื่อให้ใส่ปุ่มลบได้
+    fav_data = pd.read_sql_query("SELECT id, word, translation FROM vocab WHERE is_favorite = 1", conn)
     conn.close()
+    
+    if not fav_data.empty:
+        for index, row in fav_data.iterrows():
+            col1, col2, col3 = st.columns([2, 3, 1])
+            col1.write(f"**{row['word']}**")
+            col2.write(row['translation'])
+            # ปุ่มลบคำออกจากรายการโปรด
+            if col3.button("❌ Remove", key=f"del_{row['id']}", help="Unfavorite"):
+                conn = sqlite3.connect(DB_NAME)
+                c = conn.cursor()
+                c.execute("UPDATE vocab SET is_favorite = 0 WHERE id = ?", (row['id'],))
+                conn.commit()
+                conn.close()
+                st.rerun()
+            st.divider()
+    else:
+        st.info("You haven't saved any words to favorites yet.")
 
 with tab3:
-    st.subheader("📊 Mastery Analytics")
+    st.subheader("📊 Analytics")
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT word, mastery_score FROM vocab", conn)
     if not df.empty: st.plotly_chart(px.bar(df, x='word', y='mastery_score'))
@@ -215,5 +217,5 @@ with tab3:
 
 with tab4:
     st.subheader("🛡️ Admin")
-    if st.button("Reset Database"):
+    if st.button("Reset DB"):
         conn = sqlite3.connect(DB_NAME); c = conn.cursor(); c.execute("DROP TABLE IF EXISTS vocab"); conn.commit(); st.rerun()
