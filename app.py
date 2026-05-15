@@ -24,7 +24,7 @@ def init_db():
                   mastery_score INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0)''')
     c.execute("SELECT COUNT(*) FROM vocab")
     if c.fetchone()[0] == 0:
-        with st.spinner("🚀 กำลังเตรียมคลังศัพท์และแปลไทยอัตโนมัติ..."):
+        with st.spinner("🚀 กำลังเตรียมคลังศัพท์..."):
             for w in INITIAL_WORDS:
                 auto_add_word(w, "B2")
     conn.commit()
@@ -39,7 +39,7 @@ def auto_add_word(word, level="B2"):
             pron = res.get('phonetic', next((p.get('text') for p in res.get('phonetics', []) if p.get('text')), "/.../"))
             meaning = res['meanings'][0]
             pos = meaning['partOfSpeech']
-            ex = meaning['definitions'][0].get('example', 'Commonly used in academic contexts.')
+            ex = meaning['definitions'][0].get('example', 'Commonly used context.')
         translation = GoogleTranslator(source='en', target='th').translate(word)
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
@@ -77,22 +77,30 @@ def update_srs(word_id, success):
 # --- 2. UI SETUP ---
 st.set_page_config(page_title="Typist Lexicon Pro", layout="wide")
 
-# JavaScript for Auto-Focus
+# JavaScript แก้ไข 2 จุด: 1. Auto Focus 2. ปิด Autocomplete (บับเบิ้ล)
 st.markdown("""
     <script>
-    function forceFocus() {
+    function setupInput() {
         const inputs = window.parent.document.querySelectorAll('input');
         inputs.forEach(input => {
             const label = input.getAttribute('aria-label');
             if (label && label.includes('Type:')) {
-                if (window.parent.document.activeElement !== input) { input.focus(); }
+                // ปิดบับเบิ้ลช่วยสะกด
+                input.setAttribute('autocomplete', 'off');
+                input.setAttribute('autocorrect', 'off');
+                input.setAttribute('spellcheck', 'false');
+                // บังคับ Focus
+                if (window.parent.document.activeElement !== input) {
+                    input.focus();
+                }
             }
         });
     }
-    setInterval(forceFocus, 500);
+    setInterval(setupInput, 500);
     </script>
 """, unsafe_allow_html=True)
 
+# แก้ไขสีปุ่มให้สว่างขึ้น (พื้นขาว ตัวดำ) เพื่อให้อ่านง่าย
 st.markdown("""
     <style>
     .stApp { background-color: #0F172A; color: #F1F5F9; }
@@ -100,6 +108,20 @@ st.markdown("""
     .word-title { font-size: 5rem; font-weight: 900; color: #38BDF8; margin: 0; letter-spacing: -2px; }
     .trans-txt { font-size: 2.2rem; color: #F8FAFC; margin-bottom: 20px; font-weight: 600; }
     .example-quote { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 5px solid #38BDF8; text-align: left; font-style: italic; color: #CBD5E1; }
+    
+    /* แก้ไขสีปุ่ม Streamlit ให้ตัดกับพื้นหลัง */
+    div.stButton > button {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border-radius: 10px;
+        border: none;
+        font-weight: bold;
+        width: 100%;
+    }
+    div.stButton > button:hover {
+        background-color: #38BDF8 !important;
+        color: #FFFFFF !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -131,15 +153,21 @@ with tab1:
                     <div class="example-quote">" {curr['example']} "</div>
                 </div>""", unsafe_allow_html=True)
             _, c2, _ = st.columns([1,2,1])
+            # เพิ่มช่องว่างด้านบนช่องพิมพ์
+            st.write("")
             u_input = c2.text_input(f"Type: ({st.session_state.idx+1}/{len(st.session_state.session_words)})", key=f"t_{curr['id']}_{st.session_state.idx}")
-            if c2.button("⭐ Save to Favorites", key=f"f_{curr['id']}"):
+            
+            st.write("")
+            if c2.button("⭐ Save Favorite", key=f"f_{curr['id']}"):
                 nc = sqlite3.connect(DB_NAME); cur = nc.cursor()
                 cur.execute("UPDATE vocab SET is_favorite = ? WHERE id = ?", (1 if curr['is_favorite']==0 else 0, curr['id']))
                 nc.commit(); nc.close(); st.rerun()
+
             if u_input.strip().lower() == curr['word'].lower():
                 st.session_state.idx += 1
                 if st.session_state.idx >= len(st.session_state.session_words): st.session_state.phase = "quiz"
                 st.rerun()
+        
         elif st.session_state.phase == "quiz":
             qz = st.session_state.session_words[st.session_state.quiz_idx]
             st.markdown(f"<h2 style='text-align:center;'>ความหมายของ <b>'{qz['word']}'</b>?</h2>", unsafe_allow_html=True)
@@ -155,11 +183,11 @@ with tab1:
                             st.balloons(); st.session_state.session_words = []; st.toast("Done!"); time.sleep(1)
                         st.rerun()
                     else:
-                        update_srs(qz['id'], False); st.error("Wrong! Restarting Batch..."); time.sleep(1.5)
+                        update_srs(qz['id'], False); st.error("Wrong!"); time.sleep(1)
                         st.session_state.phase, st.session_state.idx, st.session_state.quiz_idx = "typing", 0, 0
                         st.rerun()
     else:
-        st.info("No words for today! Click below to add new ones:")
+        st.info("No words! Click to add:")
         if st.button("📦 Add 5 Random Words"):
             new_list = ["Innovative", "Collaboration", "Pragmatic", "Intuition", "Legacy"]
             for nw in new_list: auto_add_word(nw)
