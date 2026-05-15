@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 # --- 1. CONFIG ---
 DB_NAME = "lexicon_v5.db"
 CSV_FILE = "my_vocab.csv"
-TARGET_BATCH_SIZE = 5  # ปรับเป็น 10 ตามที่คุณต้องการแล้ว
+TARGET_BATCH_SIZE = 10 
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -87,7 +87,18 @@ st.markdown("""<style>
     .pronunciation { font-size: 1.5rem; color: #38BDF8; font-family: monospace; margin-bottom: 10px; }
     .translation { font-size: 2.5rem; color: #F8FAFC; font-weight: bold; margin: 15px 0; }
     .example-box { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 6px solid #38BDF8; text-align: left; }
-    .stTextInput input { font-size: 1.5rem !important; text-align: center !important; color: #FFFFFF !important; }
+    
+    /* แก้ไขช่อง Input ให้ตัวหนังสือสีดำ พื้นหลังสว่าง มองเห็นชัดเจน */
+    .stTextInput input { 
+        font-size: 2rem !important; 
+        text-align: center !important; 
+        color: #000000 !important; 
+        background-color: #F8FAFC !important;
+        font-weight: bold !important;
+        border-radius: 12px !important;
+        border: 3px solid #38BDF8 !important;
+    }
+    
     #MainMenu, footer, header {visibility: hidden;}
 </style>""", unsafe_allow_html=True)
 
@@ -110,7 +121,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["🎯 Practice", "⭐ Favorite", "📊 Stats",
 with tab1:
     conn = sqlite3.connect(DB_NAME)
     
-    # Load Batch
     if not st.session_state.session_words:
         query = "SELECT * FROM vocab WHERE next_review <= ? ORDER BY level ASC, RANDOM() LIMIT ?"
         df_due = pd.read_sql_query(query, conn, params=(datetime.now().strftime('%Y-%m-%d'), TARGET_BATCH_SIZE))
@@ -121,7 +131,6 @@ with tab1:
             st.session_state.phase = "typing"
 
     if st.session_state.session_words:
-        # Phase 1: Typing
         if st.session_state.phase == "typing" and st.session_state.idx < len(st.session_state.session_words):
             curr = st.session_state.session_words[st.session_state.idx]
             
@@ -146,19 +155,17 @@ with tab1:
             if col_fav.button(fav_text, key=f"fav_{curr['id']}"):
                 conn.cursor().execute("UPDATE vocab SET is_favorite=? WHERE id=?", (1-curr['is_favorite'], curr['id'])); conn.commit(); st.rerun()
 
-            u_input = st.text_input(f"Typing: {st.session_state.idx+1}/{len(st.session_state.session_words)}", key=f"in_{curr['id']}")
+            u_input = st.text_input(f"Typing: {st.session_state.idx+1}/{len(st.session_state.session_words)}", key=f"in_{curr['id']}_{st.session_state.idx}")
             if u_input.strip().lower() == curr['word'].strip().lower():
                 st.session_state.idx += 1
                 if st.session_state.idx >= len(st.session_state.session_words):
                     st.session_state.phase = "quiz"
                 st.rerun()
 
-        # Phase 2: Quiz (Multiple Choice)
         elif st.session_state.phase == "quiz" and st.session_state.quiz_idx < len(st.session_state.session_words):
             qz = st.session_state.session_words[st.session_state.quiz_idx]
             st.markdown(f"<div class='main-card'><h2 style='color:#38BDF8;'>Quiz: {st.session_state.quiz_idx+1}/{len(st.session_state.session_words)}</h2><h1 class='word-title'>{qz['word']}</h1><p>แปลว่าอะไร?</p></div>", unsafe_allow_html=True)
             
-            # Get options
             c = conn.cursor()
             c.execute("SELECT translation FROM vocab WHERE id != ? AND translation IS NOT NULL ORDER BY RANDOM() LIMIT 3", (qz['id'],))
             wrong_opts = [r[0] for r in c.fetchall()]
@@ -180,14 +187,13 @@ with tab1:
                         st.error(f"ผิด! '{qz['word']}' แปลว่า '{qz['translation']}'")
                         update_srs(qz['id'], False)
                         time.sleep(1.5)
-                        # ผิดปุ๊บ กลับไปเริ่ม Typing ใหม่ทั้ง Batch เพื่อความแม่น
                         st.session_state.phase, st.session_state.idx, st.session_state.quiz_idx = "typing", 0, 0
                         st.rerun()
     else:
-        st.info("No words left for today! Try adding more or Reset DB.")
+        st.info("No words left for today!")
     conn.close()
 
-# --- TAB 2, 3, 4 (เหมือนเดิมแต่ครบถ้วน) ---
+# --- TAB 2, 3, 4 ---
 with tab2:
     st.subheader("⭐ My Favorites")
     conn = sqlite3.connect(DB_NAME)
