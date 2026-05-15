@@ -12,7 +12,6 @@ from deep_translator import GoogleTranslator
 DB_NAME = "lexicon_v5.db"
 TARGET_BATCH_SIZE = 3 
 
-# คลังคำศัพท์ตัวอย่างตามระดับ (สามารถเพิ่มคำได้เรื่อยๆ ในอนาคต)
 VOCAB_LEVELS = {
     "A1": ["Always", "Beautiful", "Clean", "Drink", "Eat", "Friend", "Happy", "Learn"],
     "A2": ["Believe", "Choose", "Decide", "Explain", "Forget", "Happen", "Ignore", "Journey"],
@@ -23,6 +22,7 @@ VOCAB_LEVELS = {
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    # สร้างตารางพร้อมคอลัมน์ example_th
     c.execute('''CREATE TABLE IF NOT EXISTS vocab 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   word TEXT UNIQUE, pos TEXT, pronunciation TEXT, translation TEXT, 
@@ -30,10 +30,15 @@ def init_db():
                   easiness REAL DEFAULT 2.5, next_review TEXT, 
                   mastery_score INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0)''')
     
-    # ถ้าเปิดแอปครั้งแรก ให้เริ่มจากคำระดับ A1
+    # --- ระบบกันระเบิด: ตรวจสอบและเพิ่มคอลัมน์อัตโนมัติถ้าไม่มี ---
+    c.execute("PRAGMA table_info(vocab)")
+    columns = [column[1] for column in c.fetchall()]
+    if 'example_th' not in columns:
+        c.execute("ALTER TABLE vocab ADD COLUMN example_th TEXT DEFAULT ''")
+    
     c.execute("SELECT COUNT(*) FROM vocab")
     if c.fetchone()[0] == 0:
-        with st.spinner("🚀 กำลังเตรียมคลังศัพท์ระดับ A1 และแปลตัวอย่างประโยค..."):
+        with st.spinner("🚀 กำลังเตรียมคลังศัพท์ระดับ A1..."):
             for w in VOCAB_LEVELS["A1"]:
                 auto_add_word(w, "A1")
     conn.commit()
@@ -42,15 +47,14 @@ def init_db():
 def auto_add_word(word, level):
     try:
         dict_res = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}", timeout=5)
-        pos, pron, ex = "n/a", "/.../", "No example available."
+        pos, pron, ex = "n/a", "/.../", f"Let's use '{word}' in a sentence."
         if dict_res.status_code == 200:
             res = dict_res.json()[0]
             pron = res.get('phonetic', next((p.get('text') for p in res.get('phonetics', []) if p.get('text')), "/.../"))
             meaning = res['meanings'][0]
             pos = meaning['partOfSpeech']
-            ex = meaning['definitions'][0].get('example', f"Let's learn the word '{word}'.")
+            ex = meaning['definitions'][0].get('example', f"Example sentence for {word}.")
         
-        # แปลทั้งคำศัพท์และประโยคตัวอย่าง
         translator = GoogleTranslator(source='en', target='th')
         translation = translator.translate(word)
         example_th = translator.translate(ex)
@@ -67,6 +71,7 @@ def auto_add_word(word, level):
     except:
         return False
 
+# ฟังก์ชันอื่นๆ คงเดิม...
 def update_srs(word_id, success):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -88,7 +93,7 @@ def update_srs(word_id, success):
     conn.commit()
     conn.close()
 
-# --- 2. UI SETUP ---
+# --- UI SETUP ---
 st.set_page_config(page_title="Typist Lexicon Pro", layout="wide")
 
 st.markdown("""
@@ -101,7 +106,6 @@ st.markdown("""
                 input.setAttribute('autocomplete', 'one-time-code');
                 input.setAttribute('autocorrect', 'off');
                 input.setAttribute('spellcheck', 'false');
-                input.style.userSelect = 'none'; 
                 if (window.parent.document.activeElement !== input) { input.focus(); }
             }
         });
@@ -153,21 +157,26 @@ with tab1:
     if st.session_state.session_words:
         if st.session_state.phase == "typing":
             curr = st.session_state.session_words[st.session_state.idx]
+            # ใช้ .get() เพื่อป้องกันแอปพังถ้าข้อมูลไม่มีค่า
+            ex_th = curr.get('example_th', 'ไม่มีคำแปลตัวอย่าง')
+            
             st.markdown(f"""<div class="main-card">
                     <p style="color:#94A3B8; font-weight:bold;">LEVEL: {curr['level']} | {curr['pos']} | {curr['pronunciation']}</p>
                     <h1 class="word-title">{curr['word']}</h1>
                     <p class="trans-txt">{curr['translation']}</p>
                     <div class="example-quote">
                         <div class="ex-en">" {curr['example']} "</div>
-                        <div class="ex-th">({curr['example_th']})</div>
+                        <div class="ex-th">({ex_th})</div>
                     </div>
                 </div>""", unsafe_allow_html=True)
             _, c2, _ = st.columns([1,2,1])
             u_input = c2.text_input(f"Type: ({st.session_state.idx+1}/{len(st.session_state.session_words)})", key=f"t_{curr['id']}_{st.session_state.idx}")
+            
             if c2.button("⭐ Save to Fav", key=f"f_{curr['id']}"):
                 nc = sqlite3.connect(DB_NAME); cur = nc.cursor()
                 cur.execute("UPDATE vocab SET is_favorite = ? WHERE id = ?", (1 if curr['is_favorite']==0 else 0, curr['id']))
                 nc.commit(); nc.close(); st.rerun()
+                
             if u_input.strip().lower() == curr['word'].strip().lower():
                 st.session_state.idx += 1
                 if st.session_state.idx >= len(st.session_state.session_words): st.session_state.phase = "quiz"
@@ -186,14 +195,13 @@ with tab1:
                         update_srs(qz['id'], True); st.session_state.quiz_idx += 1
                         if st.session_state.quiz_idx >= len(st.session_state.session_words):
                             st.balloons(); st.session_state.session_words = []; st.toast("Done!")
-                            time.sleep(1)
                         st.rerun()
                     else:
                         update_srs(qz['id'], False); st.error("Wrong!"); time.sleep(1)
                         st.session_state.phase, st.session_state.idx, st.session_state.quiz_idx = "typing", 0, 0
                         st.rerun()
     else:
-        st.info("วันนี้ฝึกครบแล้ว! กดเติมคำศัพท์ระดับถัดไปได้เลย:")
+        st.info("วันนี้ฝึกครบแล้ว! กดเลือกเติมคำศัพท์ระดับถัดไป:")
         lvl_col1, lvl_col2, lvl_col3, lvl_col4 = st.columns(4)
         if lvl_col1.button("Add A2 words"):
             for w in VOCAB_LEVELS["A2"]: auto_add_word(w, "A2")
@@ -204,13 +212,13 @@ with tab1:
         if lvl_col3.button("Add B2 words"):
             for w in VOCAB_LEVELS["B2"]: auto_add_word(w, "B2")
             st.rerun()
-        if lvl_col4.button("Add A1 words (Refill)"):
+        if lvl_col4.button("Add A1 (Refill)"):
             for w in VOCAB_LEVELS["A1"]: auto_add_word(w, "A1")
             st.rerun()
     conn.close()
 
 with tab2:
-    st.subheader("⭐ My Favorite Words")
+    st.subheader("⭐ Favorites")
     conn = sqlite3.connect(DB_NAME)
     fav_data = pd.read_sql_query("SELECT id, word, translation FROM vocab WHERE is_favorite = 1", conn)
     conn.close()
@@ -234,5 +242,5 @@ with tab3:
 
 with tab4:
     st.subheader("🛡️ Admin")
-    if st.button("Reset DB"):
+    if st.button("Reset Database"):
         conn = sqlite3.connect(DB_NAME); c = conn.cursor(); c.execute("DROP TABLE IF EXISTS vocab"); conn.commit(); st.rerun()
