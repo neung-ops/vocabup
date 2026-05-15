@@ -24,7 +24,7 @@ def init_db():
                   mastery_score INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0)''')
     c.execute("SELECT COUNT(*) FROM vocab")
     if c.fetchone()[0] == 0:
-        with st.spinner("🚀 กำลังเตรียมคลังศัพท์..."):
+        with st.spinner("🚀 Preparing lexicon..."):
             for w in INITIAL_WORDS:
                 auto_add_word(w, "B2")
     conn.commit()
@@ -77,7 +77,7 @@ def update_srs(word_id, success):
 # --- 2. UI SETUP ---
 st.set_page_config(page_title="Typist Lexicon Pro", layout="wide")
 
-# JavaScript แก้ไข 2 จุด: 1. Auto Focus 2. ปิด Autocomplete (บับเบิ้ล)
+# JavaScript: ปิดบับเบิ้ล Analyze/Smart Selection และ Autocomplete ทั้งหมด
 st.markdown("""
     <script>
     function setupInput() {
@@ -85,38 +85,46 @@ st.markdown("""
         inputs.forEach(input => {
             const label = input.getAttribute('aria-label');
             if (label && label.includes('Type:')) {
-                // ปิดบับเบิ้ลช่วยสะกด
-                input.setAttribute('autocomplete', 'off');
+                input.setAttribute('autocomplete', 'one-time-code'); // ป้องกันบับเบิ้ลประวัติ
                 input.setAttribute('autocorrect', 'off');
+                input.setAttribute('autocapitalize', 'off');
                 input.setAttribute('spellcheck', 'false');
-                // บังคับ Focus
+                input.style.userSelect = 'none'; // ป้องกันบับเบิ้ล Analyze จากการเลือกข้อความ
                 if (window.parent.document.activeElement !== input) {
                     input.focus();
                 }
             }
         });
     }
-    setInterval(setupInput, 500);
+    setInterval(setupInput, 300);
     </script>
 """, unsafe_allow_html=True)
 
-# แก้ไขสีปุ่มให้สว่างขึ้น (พื้นขาว ตัวดำ) เพื่อให้อ่านง่าย
+# CSS: แก้ไขสีตารางให้อ่านง่าย และปรับสีปุ่ม
 st.markdown("""
     <style>
     .stApp { background-color: #0F172A; color: #F1F5F9; }
     .main-card { background: #1E293B; border-radius: 24px; padding: 3rem; border: 1px solid #334155; text-align: center; }
     .word-title { font-size: 5rem; font-weight: 900; color: #38BDF8; margin: 0; letter-spacing: -2px; }
     .trans-txt { font-size: 2.2rem; color: #F8FAFC; margin-bottom: 20px; font-weight: 600; }
-    .example-quote { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 5px solid #38BDF8; text-align: left; font-style: italic; color: #CBD5E1; }
     
-    /* แก้ไขสีปุ่ม Streamlit ให้ตัดกับพื้นหลัง */
+    /* แก้ไขสีตาราง Favorites ให้อ่านออก */
+    .stTable, [data-testid="stTable"] td {
+        color: #FFFFFF !important;
+        background-color: #1E293B !important;
+    }
+    .stTable th {
+        color: #38BDF8 !important;
+        background-color: #0F172A !important;
+    }
+
+    /* ปุ่มสีขาว ตัวดำ */
     div.stButton > button {
         background-color: #FFFFFF !important;
         color: #0F172A !important;
-        border-radius: 10px;
-        border: none;
+        border-radius: 12px;
         font-weight: bold;
-        width: 100%;
+        border: none;
     }
     div.stButton > button:hover {
         background-color: #38BDF8 !important;
@@ -150,15 +158,12 @@ with tab1:
                     <p style="color:#94A3B8;">{curr['level']} | {curr['pos']} | {curr['pronunciation']}</p>
                     <h1 class="word-title">{curr['word']}</h1>
                     <p class="trans-txt">{curr['translation']}</p>
-                    <div class="example-quote">" {curr['example']} "</div>
                 </div>""", unsafe_allow_html=True)
             _, c2, _ = st.columns([1,2,1])
-            # เพิ่มช่องว่างด้านบนช่องพิมพ์
             st.write("")
             u_input = c2.text_input(f"Type: ({st.session_state.idx+1}/{len(st.session_state.session_words)})", key=f"t_{curr['id']}_{st.session_state.idx}")
             
-            st.write("")
-            if c2.button("⭐ Save Favorite", key=f"f_{curr['id']}"):
+            if c2.button("⭐ Save to Fav", key=f"f_{curr['id']}"):
                 nc = sqlite3.connect(DB_NAME); cur = nc.cursor()
                 cur.execute("UPDATE vocab SET is_favorite = ? WHERE id = ?", (1 if curr['is_favorite']==0 else 0, curr['id']))
                 nc.commit(); nc.close(); st.rerun()
@@ -187,21 +192,25 @@ with tab1:
                         st.session_state.phase, st.session_state.idx, st.session_state.quiz_idx = "typing", 0, 0
                         st.rerun()
     else:
-        st.info("No words! Click to add:")
-        if st.button("📦 Add 5 Random Words"):
+        st.info("Daily session complete!")
+        if st.button("📦 Add New Words"):
             new_list = ["Innovative", "Collaboration", "Pragmatic", "Intuition", "Legacy"]
             for nw in new_list: auto_add_word(nw)
             st.rerun()
     conn.close()
 
 with tab2:
-    st.subheader("⭐ Favorites")
+    st.subheader("⭐ Favorites List")
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT word, translation FROM vocab WHERE is_favorite = 1", conn)
-    st.table(df); conn.close()
+    if not df.empty:
+        st.table(df)
+    else:
+        st.write("No favorite words yet.")
+    conn.close()
 
 with tab3:
-    st.subheader("📊 Analytics")
+    st.subheader("📊 Mastery Analytics")
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT word, mastery_score FROM vocab", conn)
     if not df.empty: st.plotly_chart(px.bar(df, x='word', y='mastery_score'))
