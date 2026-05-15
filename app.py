@@ -39,7 +39,8 @@ def auto_add_word(word, level="B2"):
             pron = res.get('phonetic', next((p.get('text') for p in res.get('phonetics', []) if p.get('text')), "/.../"))
             meaning = res['meanings'][0]
             pos = meaning['partOfSpeech']
-            ex = meaning['definitions'][0].get('example', 'Commonly used context.')
+            # ดึง Example ออกมา
+            ex = meaning['definitions'][0].get('example', 'Commonly used in professional contexts.')
         translation = GoogleTranslator(source='en', target='th').translate(word)
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
@@ -77,7 +78,7 @@ def update_srs(word_id, success):
 # --- 2. UI SETUP ---
 st.set_page_config(page_title="Typist Lexicon Pro", layout="wide")
 
-# JavaScript: ปิดบับเบิ้ล Analyze/Smart Selection และ Autocomplete ทั้งหมด
+# JavaScript: ปิดบับเบิ้ล และ บังคับ Focus
 st.markdown("""
     <script>
     function setupInput() {
@@ -85,11 +86,10 @@ st.markdown("""
         inputs.forEach(input => {
             const label = input.getAttribute('aria-label');
             if (label && label.includes('Type:')) {
-                input.setAttribute('autocomplete', 'one-time-code'); // ป้องกันบับเบิ้ลประวัติ
+                input.setAttribute('autocomplete', 'one-time-code');
                 input.setAttribute('autocorrect', 'off');
-                input.setAttribute('autocapitalize', 'off');
                 input.setAttribute('spellcheck', 'false');
-                input.style.userSelect = 'none'; // ป้องกันบับเบิ้ล Analyze จากการเลือกข้อความ
+                input.style.userSelect = 'none'; 
                 if (window.parent.document.activeElement !== input) {
                     input.focus();
                 }
@@ -100,23 +100,19 @@ st.markdown("""
     </script>
 """, unsafe_allow_html=True)
 
-# CSS: แก้ไขสีตารางให้อ่านง่าย และปรับสีปุ่ม
+# CSS: สีตาราง, สีปุ่ม, และสไตล์ Card
 st.markdown("""
     <style>
     .stApp { background-color: #0F172A; color: #F1F5F9; }
     .main-card { background: #1E293B; border-radius: 24px; padding: 3rem; border: 1px solid #334155; text-align: center; }
     .word-title { font-size: 5rem; font-weight: 900; color: #38BDF8; margin: 0; letter-spacing: -2px; }
     .trans-txt { font-size: 2.2rem; color: #F8FAFC; margin-bottom: 20px; font-weight: 600; }
+    .example-quote { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 5px solid #38BDF8; text-align: left; font-style: italic; color: #CBD5E1; margin-top: 20px; }
     
-    /* แก้ไขสีตาราง Favorites ให้อ่านออก */
-    .stTable, [data-testid="stTable"] td {
-        color: #FFFFFF !important;
-        background-color: #1E293B !important;
-    }
-    .stTable th {
-        color: #38BDF8 !important;
-        background-color: #0F172A !important;
-    }
+    /* แก้สีตาราง Favorites */
+    [data-testid="stTable"] { color: #FFFFFF !important; }
+    [data-testid="stTable"] td { color: #FFFFFF !important; background-color: #1E293B !important; }
+    [data-testid="stTable"] th { color: #38BDF8 !important; background-color: #0F172A !important; }
 
     /* ปุ่มสีขาว ตัวดำ */
     div.stButton > button {
@@ -158,6 +154,7 @@ with tab1:
                     <p style="color:#94A3B8;">{curr['level']} | {curr['pos']} | {curr['pronunciation']}</p>
                     <h1 class="word-title">{curr['word']}</h1>
                     <p class="trans-txt">{curr['translation']}</p>
+                    <div class="example-quote">" {curr['example']} "</div>
                 </div>""", unsafe_allow_html=True)
             _, c2, _ = st.columns([1,2,1])
             st.write("")
@@ -175,7 +172,7 @@ with tab1:
         
         elif st.session_state.phase == "quiz":
             qz = st.session_state.session_words[st.session_state.quiz_idx]
-            st.markdown(f"<h2 style='text-align:center;'>ความหมายของ <b>'{qz['word']}'</b>?</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='text-align:center;'>Meaning of <b>'{qz['word']}'</b>?</h2>", unsafe_allow_html=True)
             c = conn.cursor()
             c.execute("SELECT translation FROM vocab WHERE id != ? ORDER BY RANDOM() LIMIT 3", (qz['id'],))
             opts = [r[0] for r in c.fetchall()] + [qz['translation']]; random.shuffle(opts)
