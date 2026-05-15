@@ -11,7 +11,14 @@ from deep_translator import GoogleTranslator
 # --- 1. DATABASE & CONFIG ---
 DB_NAME = "lexicon_v5.db"
 TARGET_BATCH_SIZE = 3 
-INITIAL_WORDS = ["Exacerbate", "Paradigm", "Quintessential", "Inherent", "Subjective", "Objective", "Cognitive", "Synthesis"]
+
+# คลังคำศัพท์ตัวอย่างตามระดับ (สามารถเพิ่มคำได้เรื่อยๆ ในอนาคต)
+VOCAB_LEVELS = {
+    "A1": ["Always", "Beautiful", "Clean", "Drink", "Eat", "Friend", "Happy", "Learn"],
+    "A2": ["Believe", "Choose", "Decide", "Explain", "Forget", "Happen", "Ignore", "Journey"],
+    "B1": ["Ability", "Challenge", "Describe", "Evidence", "Focus", "Government", "Healthy", "Improve"],
+    "B2": ["Exacerbate", "Paradigm", "Quintessential", "Inherent", "Subjective", "Objective", "Cognitive", "Synthesis"]
+}
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -19,18 +26,20 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS vocab 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   word TEXT UNIQUE, pos TEXT, pronunciation TEXT, translation TEXT, 
-                  example TEXT, level TEXT, interval INTEGER DEFAULT 0, 
+                  example TEXT, example_th TEXT, level TEXT, interval INTEGER DEFAULT 0, 
                   easiness REAL DEFAULT 2.5, next_review TEXT, 
                   mastery_score INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0)''')
+    
+    # ถ้าเปิดแอปครั้งแรก ให้เริ่มจากคำระดับ A1
     c.execute("SELECT COUNT(*) FROM vocab")
     if c.fetchone()[0] == 0:
-        with st.spinner("🚀 Preparing lexicon..."):
-            for w in INITIAL_WORDS:
-                auto_add_word(w, "B2")
+        with st.spinner("🚀 กำลังเตรียมคลังศัพท์ระดับ A1 และแปลตัวอย่างประโยค..."):
+            for w in VOCAB_LEVELS["A1"]:
+                auto_add_word(w, "A1")
     conn.commit()
     conn.close()
 
-def auto_add_word(word, level="B2"):
+def auto_add_word(word, level):
     try:
         dict_res = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}", timeout=5)
         pos, pron, ex = "n/a", "/.../", "No example available."
@@ -39,14 +48,19 @@ def auto_add_word(word, level="B2"):
             pron = res.get('phonetic', next((p.get('text') for p in res.get('phonetics', []) if p.get('text')), "/.../"))
             meaning = res['meanings'][0]
             pos = meaning['partOfSpeech']
-            ex = meaning['definitions'][0].get('example', 'Used in professional contexts.')
-        translation = GoogleTranslator(source='en', target='th').translate(word)
+            ex = meaning['definitions'][0].get('example', f"Let's learn the word '{word}'.")
+        
+        # แปลทั้งคำศัพท์และประโยคตัวอย่าง
+        translator = GoogleTranslator(source='en', target='th')
+        translation = translator.translate(word)
+        example_th = translator.translate(ex)
+        
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("""INSERT OR IGNORE INTO vocab 
-                     (word, pos, pronunciation, translation, example, level, next_review) 
-                     VALUES (?,?,?,?,?,?,?)""",
-                  (word.capitalize(), pos, pron, translation, ex, level, datetime.now().strftime('%Y-%m-%d')))
+                     (word, pos, pronunciation, translation, example, example_th, level, next_review) 
+                     VALUES (?,?,?,?,?,?,?,?)""",
+                  (word.capitalize(), pos, pron, translation, ex, example_th, level, datetime.now().strftime('%Y-%m-%d')))
         conn.commit()
         conn.close()
         return True
@@ -99,23 +113,22 @@ st.markdown("""
 st.markdown("""
     <style>
     .stApp { background-color: #0F172A; color: #F1F5F9; }
-    .main-card { background: #1E293B; border-radius: 24px; padding: 2.5rem; border: 1px solid #334155; text-align: center; }
+    .main-card { background: #1E293B; border-radius: 24px; padding: 2rem; border: 1px solid #334155; text-align: center; }
     .word-title { font-size: 5rem; font-weight: 900; color: #38BDF8; margin: 0; letter-spacing: -2px; }
-    .trans-txt { font-size: 2.2rem; color: #F8FAFC; margin-bottom: 20px; font-weight: 600; }
-    .example-quote { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 5px solid #38BDF8; text-align: left; font-style: italic; color: #CBD5E1; }
+    .trans-txt { font-size: 2.2rem; color: #F8FAFC; margin-bottom: 10px; font-weight: 600; }
+    .example-quote { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 5px solid #38BDF8; text-align: left; margin-top: 15px; }
+    .ex-en { font-style: italic; color: #CBD5E1; font-size: 1.1rem; }
+    .ex-th { color: #94A3B8; font-size: 1rem; margin-top: 5px; }
     
+    [data-testid="stTable"] td { color: #FFFFFF !important; background-color: #1E293B !important; }
+    [data-testid="stTable"] th { color: #38BDF8 !important; background-color: #0F172A !important; }
+
     div.stButton > button {
         background-color: #FFFFFF !important;
         color: #0F172A !important;
         border-radius: 12px; font-weight: bold; border: none;
     }
     div.stButton > button:hover { background-color: #38BDF8 !important; color: #FFFFFF !important; }
-    
-    /* ปุ่มลบสีแดง */
-    .del-btn > div > button {
-        background-color: #EF4444 !important;
-        color: white !important;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -141,10 +154,13 @@ with tab1:
         if st.session_state.phase == "typing":
             curr = st.session_state.session_words[st.session_state.idx]
             st.markdown(f"""<div class="main-card">
-                    <p style="color:#94A3B8;">{curr['level']} | {curr['pos']} | {curr['pronunciation']}</p>
+                    <p style="color:#94A3B8; font-weight:bold;">LEVEL: {curr['level']} | {curr['pos']} | {curr['pronunciation']}</p>
                     <h1 class="word-title">{curr['word']}</h1>
                     <p class="trans-txt">{curr['translation']}</p>
-                    <div class="example-quote">" {curr['example']} "</div>
+                    <div class="example-quote">
+                        <div class="ex-en">" {curr['example']} "</div>
+                        <div class="ex-th">({curr['example_th']})</div>
+                    </div>
                 </div>""", unsafe_allow_html=True)
             _, c2, _ = st.columns([1,2,1])
             u_input = c2.text_input(f"Type: ({st.session_state.idx+1}/{len(st.session_state.session_words)})", key=f"t_{curr['id']}_{st.session_state.idx}")
@@ -177,36 +193,37 @@ with tab1:
                         st.session_state.phase, st.session_state.idx, st.session_state.quiz_idx = "typing", 0, 0
                         st.rerun()
     else:
-        st.info("No words left! Add more to continue.")
-        if st.button("📦 Add Words"):
-            new_list = ["Innovative", "Collaboration", "Pragmatic", "Intuition", "Legacy"]
-            for nw in new_list: auto_add_word(nw)
+        st.info("วันนี้ฝึกครบแล้ว! กดเติมคำศัพท์ระดับถัดไปได้เลย:")
+        lvl_col1, lvl_col2, lvl_col3, lvl_col4 = st.columns(4)
+        if lvl_col1.button("Add A2 words"):
+            for w in VOCAB_LEVELS["A2"]: auto_add_word(w, "A2")
+            st.rerun()
+        if lvl_col2.button("Add B1 words"):
+            for w in VOCAB_LEVELS["B1"]: auto_add_word(w, "B1")
+            st.rerun()
+        if lvl_col3.button("Add B2 words"):
+            for w in VOCAB_LEVELS["B2"]: auto_add_word(w, "B2")
+            st.rerun()
+        if lvl_col4.button("Add A1 words (Refill)"):
+            for w in VOCAB_LEVELS["A1"]: auto_add_word(w, "A1")
             st.rerun()
     conn.close()
 
 with tab2:
     st.subheader("⭐ My Favorite Words")
     conn = sqlite3.connect(DB_NAME)
-    # ดึงข้อมูลมาแสดงเป็นแถวๆ เพื่อให้ใส่ปุ่มลบได้
     fav_data = pd.read_sql_query("SELECT id, word, translation FROM vocab WHERE is_favorite = 1", conn)
     conn.close()
-    
     if not fav_data.empty:
         for index, row in fav_data.iterrows():
             col1, col2, col3 = st.columns([2, 3, 1])
             col1.write(f"**{row['word']}**")
             col2.write(row['translation'])
-            # ปุ่มลบคำออกจากรายการโปรด
-            if col3.button("❌ Remove", key=f"del_{row['id']}", help="Unfavorite"):
-                conn = sqlite3.connect(DB_NAME)
-                c = conn.cursor()
+            if col3.button("❌ Remove", key=f"del_{row['id']}"):
+                conn = sqlite3.connect(DB_NAME); c = conn.cursor()
                 c.execute("UPDATE vocab SET is_favorite = 0 WHERE id = ?", (row['id'],))
-                conn.commit()
-                conn.close()
-                st.rerun()
+                conn.commit(); conn.close(); st.rerun()
             st.divider()
-    else:
-        st.info("You haven't saved any words to favorites yet.")
 
 with tab3:
     st.subheader("📊 Analytics")
