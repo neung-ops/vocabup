@@ -1,458 +1,256 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import date
+import sqlite3
+from datetime import datetime, timedelta
+import time
 import random
+import plotly.express as px
+import requests
 
-from srs_engine import (
-    load_data, save_data, update_word,
-    get_due_words, get_weak_words, get_stats, get_word_state
-)
-from gemini_client import generate_word_question, generate_review_question
+# --- 1. CONFIGURATION & DATABASE ---
+DB_NAME = "lexicon_v4.db"
+TARGET_BATCH_SIZE = 3 
 
-# ─────────────────────────────────────────────
-# Page config
-# ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="VocabUp 🧠",
-    page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# รายชื่อคำตั้งต้น (แค่ตัวอักษร) เพื่อให้ระบบไปดึงข้อมูลจาก API มาเอง ไม่รกโค้ด
+INITIAL_WORDS = ["Persistent", "Resilient", "Eloquent", "Advocate", "Mitigate", "Incentive", "Pragmatic", "Ambiguous"]
 
-# ─────────────────────────────────────────────
-# Custom CSS
-# ─────────────────────────────────────────────
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS vocab 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  word TEXT UNIQUE, pos TEXT, pronunciation TEXT, translation TEXT, 
+                  example TEXT, level TEXT, interval INTEGER DEFAULT 0, 
+                  easiness REAL DEFAULT 2.5, next_review TEXT, 
+                  mastery_score INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0)''')
+    
+    # ถ้า DB ว่าง ให้ดึงข้อมูลจาก API สำหรับคำเริ่มต้นทันที
+    c.execute("SELECT COUNT(*) FROM vocab")
+    if c.fetchone()[0] == 0:
+        with st.spinner("Initializing Dictionary Data..."):
+            for w in INITIAL_WORDS:
+                data = fetch_word_data(w)
+                if data:
+                    c.execute("""INSERT OR IGNORE INTO vocab 
+                                 (word, pos, pronunciation, translation, example, level, next_review) 
+                                 VALUES (?,?,?,?,?,?,?)""",
+                              (w, data['pos'], data['pronunciation'], "รอเพิ่มคำแปล", data['example'], "B2", 
+                               datetime.now().strftime('%Y-%m-%d')))
+    conn.commit()
+    conn.close()
+
+# --- 2. API INTEGRATION (DictionaryAPI.dev) ---
+def fetch_word_data(word):
+    """ดึงข้อมูลจาก Dictionary API โดยตรง"""
+    try:
+        response = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}", timeout=5)
+        if response.status_code == 200:
+            res = response.json()[0]
+            phonetic = res.get('phonetic', '')
+            if not phonetic and res.get('phonetics'):
+                phonetic = next((p.get('text') for p in res['phonetics'] if p.get('text')), '')
+            
+            meaning = res['meanings'][0]
+            pos = meaning['partOfSpeech']
+            definition = meaning['definitions'][0]
+            example = definition.get('example', 'No example available in API.')
+            
+            return {'pos': pos, 'pronunciation': phonetic, 'example': example}
+    except: pass
+    return None
+
+# --- 3. SRS LOGIC ---
+def update_srs(word_id, success):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT interval, easiness, mastery_score FROM vocab WHERE id = ?", (word_id,))
+    res = c.fetchone()
+    if not res: return
+    interval, easiness, mastery = res
+    
+    if success:
+        interval = 1 if interval == 0 else (3 if interval == 1 else int(interval * easiness))
+        easiness = min(3.0, easiness + 0.1)
+        mastery = min(100, mastery + 10)
+    else:
+        interval = 0 # พลาดแล้วต้องทบทวนใหม่ทันที
+        easiness = max(1.3, easiness - 0.2)
+        mastery = max(0, mastery - 15)
+        
+    next_review = (datetime.now() + timedelta(days=interval)).strftime('%Y-%m-%d')
+    c.execute("UPDATE vocab SET interval=?, easiness=?, next_review=?, mastery_score=? WHERE id=?", 
+              (interval, easiness, next_review, mastery, word_id))
+    conn.commit()
+    conn.close()
+
+def toggle_favorite(word_id, current_val):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("UPDATE vocab SET is_favorite = ? WHERE id = ?", (1 if current_val == 0 else 0, word_id))
+    conn.commit()
+    conn.close()
+
+# --- 4. UI SETUP ---
+st.set_page_config(page_title="Typist Lexicon Pro", layout="wide")
+
+# JavaScript สำหรับการ Focus ช่องพิมพ์แบบ Aggressive
 st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Noto+Sans+Thai:wght@300;400;600&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Noto Sans Thai', 'Syne', sans-serif;
-}
-
-/* Dark background */
-.stApp {
-    background: #0d0f14;
-    color: #e8e8f0;
-}
-
-/* Sidebar */
-section[data-testid="stSidebar"] {
-    background: #13151c;
-    border-right: 1px solid #1e2130;
-}
-
-/* Cards */
-.card {
-    background: #13151c;
-    border: 1px solid #1e2130;
-    border-radius: 16px;
-    padding: 28px;
-    margin-bottom: 16px;
-}
-
-.card-accent {
-    background: linear-gradient(135deg, #1a1d2e 0%, #13151c 100%);
-    border: 1px solid #2a3060;
-    border-radius: 16px;
-    padding: 28px;
-    margin-bottom: 16px;
-}
-
-/* Big word display */
-.big-word {
-    font-family: 'Syne', sans-serif;
-    font-size: 3.5rem;
-    font-weight: 800;
-    color: #7c9eff;
-    letter-spacing: -1px;
-    line-height: 1.1;
-}
-
-.word-thai {
-    font-size: 1.4rem;
-    color: #a0a8c0;
-    font-weight: 300;
-    margin-top: 4px;
-}
-
-/* Sentence */
-.sentence-box {
-    background: #0a0c12;
-    border-left: 3px solid #7c9eff;
-    border-radius: 0 12px 12px 0;
-    padding: 18px 22px;
-    font-size: 1.15rem;
-    color: #c8cfe8;
-    margin: 16px 0;
-    line-height: 1.7;
-}
-
-.sentence-thai {
-    color: #6b7494;
-    font-size: 0.95rem;
-    margin-top: 6px;
-}
-
-/* Quiz options */
-.option-btn {
-    width: 100%;
-    text-align: left;
-    background: #1a1d2e;
-    border: 1px solid #2a2f45;
-    border-radius: 12px;
-    padding: 16px 20px;
-    color: #c8cfe8;
-    font-size: 1rem;
-    cursor: pointer;
-    transition: all 0.2s;
-    margin-bottom: 10px;
-}
-
-/* Status badges */
-.badge-new     { background:#1e3a5f; color:#60a5fa; padding:4px 12px; border-radius:20px; font-size:0.8rem; }
-.badge-learn   { background:#3d2e00; color:#fbbf24; padding:4px 12px; border-radius:20px; font-size:0.8rem; }
-.badge-known   { background:#0d3d2e; color:#34d399; padding:4px 12px; border-radius:20px; font-size:0.8rem; }
-.badge-review  { background:#3d1a2e; color:#f472b6; padding:4px 12px; border-radius:20px; font-size:0.8rem; }
-
-/* Stat number */
-.stat-number {
-    font-family: 'Syne', sans-serif;
-    font-size: 2.8rem;
-    font-weight: 800;
-    color: #7c9eff;
-    line-height: 1;
-}
-.stat-label {
-    font-size: 0.85rem;
-    color: #6b7494;
-    margin-top: 4px;
-}
-
-/* Result correct/wrong */
-.result-correct {
-    background: linear-gradient(135deg, #0d3d2e, #0f2d20);
-    border: 1px solid #34d399;
-    border-radius: 12px;
-    padding: 20px;
-    color: #34d399;
-    font-size: 1.1rem;
-    margin: 12px 0;
-}
-.result-wrong {
-    background: linear-gradient(135deg, #3d1a1a, #2d0f0f);
-    border: 1px solid #f87171;
-    border-radius: 12px;
-    padding: 20px;
-    color: #f87171;
-    font-size: 1.1rem;
-    margin: 12px 0;
-}
-
-/* Review banner */
-.review-banner {
-    background: linear-gradient(90deg, #3d1a2e, #1a1d2e);
-    border: 1px solid #f472b6;
-    border-radius: 12px;
-    padding: 14px 20px;
-    color: #f9a8d4;
-    font-size: 0.95rem;
-    margin-bottom: 16px;
-}
-
-/* Hide streamlit default elements */
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-.stDeployButton {display: none;}
-</style>
+    <script>
+    function forceFocus() {
+        const inputs = window.parent.document.querySelectorAll('input');
+        inputs.forEach(input => {
+            const label = input.getAttribute('aria-label');
+            if (label && label.includes('Type:')) {
+                if (window.parent.document.activeElement !== input) {
+                    input.focus();
+                }
+            }
+        });
+    }
+    setInterval(forceFocus, 500);
+    </script>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-# Session state init
-# ─────────────────────────────────────────────
-if "data" not in st.session_state:
-    st.session_state.data = load_data()
-if "question" not in st.session_state:
-    st.session_state.question = None
-if "answered" not in st.session_state:
-    st.session_state.answered = False
-if "selected" not in st.session_state:
-    st.session_state.selected = None
-if "is_review" not in st.session_state:
-    st.session_state.is_review = False
-if "seen_words" not in st.session_state:
-    st.session_state.seen_words = []
+st.markdown("""
+    <style>
+    .stApp { background-color: #0F172A; color: #F1F5F9; }
+    .main-card { background: #1E293B; border-radius: 24px; padding: 3rem; border: 1px solid #334155; text-align: center; }
+    .word-title { font-size: 5.5rem; font-weight: 900; color: #38BDF8; margin: 0; letter-spacing: -2px; }
+    .phonetic-txt { color: #94A3B8; font-family: monospace; font-size: 1.3rem; margin-bottom: 20px; }
+    .trans-txt { font-size: 2.2rem; color: #F8FAFC; margin-bottom: 20px; font-weight: 600; }
+    .example-quote { background: #0F172A; padding: 20px; border-radius: 12px; border-left: 5px solid #38BDF8; text-align: left; font-style: italic; color: #CBD5E1; }
+    .stButton>button { border-radius: 12px; font-weight: 600; }
+    </style>
+""", unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-# Sidebar navigation
-# ─────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🧠 VocabUp")
-    st.markdown("---")
-    page = st.radio(
-        "เมนู",
-        ["🎮 เล่นเลย", "📊 Dashboard"],
-        label_visibility="collapsed"
-    )
-    st.markdown("---")
+# --- 5. STATE MANAGEMENT ---
+if 'session_words' not in st.session_state: st.session_state.session_words = []
+if 'idx' not in st.session_state: st.session_state.idx = 0
+if 'phase' not in st.session_state: st.session_state.phase = "typing"
+if 'quiz_idx' not in st.session_state: st.session_state.quiz_idx = 0
 
-    # Quick stats in sidebar
-    stats = get_stats(st.session_state.data)
-    st.markdown(f"""
-    <div style='text-align:center; padding: 8px 0;'>
-        <div style='font-size:2rem; font-weight:800; color:#7c9eff; font-family:Syne,sans-serif;'>{stats["streak"]} 🔥</div>
-        <div style='font-size:0.8rem; color:#6b7494;'>วันติดต่อกัน</div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("")
+def start_batch(words):
+    st.session_state.session_words = words
+    st.session_state.idx = 0
+    st.session_state.phase = "typing"
+    st.session_state.quiz_idx = 0
 
-    due_words = get_due_words(st.session_state.data)
-    if due_words:
-        st.markdown(f"<div class='badge-review'>📬 มีคำรอ review {len(due_words)} คำ</div>", unsafe_allow_html=True)
+# --- 6. MAIN APP ---
+init_db()
+tab1, tab2, tab3, tab4 = st.tabs(["🎯 Practice", "⭐ Favorites", "📊 Analytics", "🛡️ Vault"])
 
-    st.markdown("---")
-    st.markdown(f"<div style='color:#6b7494; font-size:0.8rem;'>คำทั้งหมด: <b style='color:#c8cfe8'>{stats['total']}</b></div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='color:#6b7494; font-size:0.8rem;'>🟢 จำได้แล้ว: <b style='color:#34d399'>{stats['known']}</b></div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='color:#6b7494; font-size:0.8rem;'>🟡 กำลังเรียน: <b style='color:#fbbf24'>{stats['learning']}</b></div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='color:#6b7494; font-size:0.8rem;'>🔵 ใหม่: <b style='color:#60a5fa'>{stats['new']}</b></div>", unsafe_allow_html=True)
+with tab1:
+    conn = sqlite3.connect(DB_NAME)
+    today = datetime.now().strftime('%Y-%m-%d')
+    due_words = pd.read_sql_query("SELECT * FROM vocab WHERE next_review <= ? LIMIT ?", conn, params=(today, TARGET_BATCH_SIZE))
+    
+    if not st.session_state.session_words and not due_words.empty:
+        start_batch(due_words.to_dict('records'))
 
-# ─────────────────────────────────────────────
-# Helper: load next question
-# ─────────────────────────────────────────────
-def load_next_question():
-    st.session_state.answered = False
-    st.session_state.selected = None
-    data = st.session_state.data
-
-    # Check if there are due words to review first
-    due = get_due_words(data)
-    if due and random.random() < 0.4:   # 40% chance to review due word
-        word_state = due[0]
-        st.session_state.is_review = True
-        with st.spinner("⏳ กำลังโหลดคำ review..."):
-            q = generate_review_question(word_state["word"], word_state.get("word_th", ""))
-        st.session_state.question = q
-    else:
-        st.session_state.is_review = False
-        with st.spinner("⏳ กำลังสร้างคำศัพท์ใหม่..."):
-            q = generate_word_question(exclude_words=st.session_state.seen_words)
-        st.session_state.question = q
-        if q:
-            st.session_state.seen_words.append(q["word"])
-            if len(st.session_state.seen_words) > 30:
-                st.session_state.seen_words = st.session_state.seen_words[-30:]
-
-# ─────────────────────────────────────────────
-# PAGE: เล่นเลย
-# ─────────────────────────────────────────────
-if page == "🎮 เล่นเลย":
-    st.markdown("# 🎮 Word in Context")
-    st.markdown("<p style='color:#6b7494;'>เห็นคำในประโยคจริง แล้วเลือกคำที่ถูกต้อง</p>", unsafe_allow_html=True)
-
-    # Auto-load first question
-    if st.session_state.question is None:
-        load_next_question()
-        st.rerun()
-
-    q = st.session_state.question
-
-    if q:
-        # Review banner
-        if st.session_state.is_review:
-            st.markdown("""
-            <div class='review-banner'>
-                🔄 <b>Review Mode</b> — คำนี้คุณเคยตอบผิดมาก่อน ลองอีกครั้ง!
-            </div>
-            """, unsafe_allow_html=True)
-
-        # Word display
-        st.markdown(f"""
-        <div class='card-accent'>
-            <div class='big-word'>{q['word']}</div>
-            <div class='word-thai'>{q['word_th']}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Sentence with blank
-        if not st.session_state.answered:
+    if st.session_state.session_words:
+        if st.session_state.phase == "typing":
+            curr = st.session_state.session_words[st.session_state.idx]
+            
+            # UI Card
             st.markdown(f"""
-            <div class='sentence-box'>
-                📝 {q['blank_sentence']}
-                <div class='sentence-thai'>{q['sentence_th']}</div>
-            </div>
+                <div class="main-card">
+                    <p class="phonetic-txt">{curr['level']} | {curr['pos']} | {curr['pronunciation']}</p>
+                    <h1 class="word-title">{curr['word']}</h1>
+                    <p class="trans-txt">{curr['translation']}</p>
+                    <div class="example-quote">" {curr['example']} "</div>
+                </div>
             """, unsafe_allow_html=True)
-            st.markdown("#### เลือกคำที่เหมาะสมที่สุด:")
+            
+            c1, c2, c3 = st.columns([1,2,1])
+            with c2:
+                st.write("")
+                user_input = st.text_input(f"Type: ({st.session_state.idx+1}/{len(st.session_state.session_words)})", 
+                                          key=f"type_{curr['id']}_{st.session_state.idx}")
+                
+                # Favorite Star
+                star_label = "⭐ Remove Favorite" if curr['is_favorite'] else "☆ Add Favorite"
+                if st.button(star_label, key=f"fav_{curr['id']}"):
+                    toggle_favorite(curr['id'], curr['is_favorite'])
+                    st.rerun()
 
-            # Shuffle options once per question
-            if "shuffled_options" not in st.session_state or st.session_state.get("last_word") != q["word"]:
-                opts = q["options"].copy()
-                random.shuffle(opts)
-                st.session_state.shuffled_options = opts
-                st.session_state.last_word = q["word"]
+                if user_input.strip().lower() == curr['word'].lower():
+                    st.session_state.idx += 1
+                    if st.session_state.idx >= len(st.session_state.session_words):
+                        st.session_state.phase = "quiz"
+                    st.rerun()
 
+        elif st.session_state.phase == "quiz":
+            qz = st.session_state.session_words[st.session_state.quiz_idx]
+            st.markdown(f"<h2 style='text-align:center;'>What is the meaning of <b>'{qz['word']}'</b>?</h2>", unsafe_allow_html=True)
+            
+            # Logic ตัวหลอก
+            c = conn.cursor()
+            c.execute("SELECT translation FROM vocab WHERE id != ? ORDER BY RANDOM() LIMIT 3", (qz['id'],))
+            opts = [r[0] for r in c.fetchall()] + [qz['translation']]
+            random.shuffle(opts)
+            
             cols = st.columns(2)
-            for i, opt in enumerate(st.session_state.shuffled_options):
-                with cols[i % 2]:
-                    if st.button(
-                        f"**{opt['word']}**  \n{opt['word_th']}",
-                        key=f"opt_{i}",
-                        use_container_width=True
-                    ):
-                        st.session_state.selected = opt
-                        st.session_state.answered = True
-                        correct = opt["is_correct"]
-                        st.session_state.data = update_word(
-                            st.session_state.data,
-                            q["word"],
-                            q["word_th"],
-                            correct
-                        )
+            for i, o in enumerate(opts):
+                if cols[i%2].button(o, key=f"opt_{i}_{qz['id']}", use_container_width=True):
+                    if o == qz['translation']:
+                        update_srs(qz['id'], True)
+                        st.session_state.quiz_idx += 1
+                        if st.session_state.quiz_idx >= len(st.session_state.session_words):
+                            st.balloons()
+                            st.session_state.session_words = []
+                            st.success("Batch Completed! Mastery Increased.")
+                            time.sleep(1.5)
                         st.rerun()
-
-        # After answer
-        else:
-            selected = st.session_state.selected
-            correct_opt = next(o for o in q["options"] if o["is_correct"])
-            is_correct = selected["is_correct"]
-
-            # Show full sentence
-            st.markdown(f"""
-            <div class='sentence-box'>
-                📖 {q['sentence']}
-                <div class='sentence-thai'>{q['sentence_th']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            if is_correct:
-                st.markdown(f"""
-                <div class='result-correct'>
-                    ✅ <b>ถูกต้อง!</b> — <b>{selected['word']}</b> ({selected['word_th']}) คือคำที่ใช้ได้ในบริบทนี้
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                state = get_word_state(st.session_state.data, q["word"])
-                st.markdown(f"""
-                <div class='result-wrong'>
-                    ❌ <b>ผิด</b> — คุณเลือก <b>{selected['word']}</b> ({selected['word_th']})<br>
-                    คำที่ถูกคือ <b>{correct_opt['word']}</b> ({correct_opt['word_th']})<br>
-                    <small style='opacity:0.7'>🔄 คำนี้จะวนกลับมาให้ review พรุ่งนี้</small>
-                </div>
-                """, unsafe_allow_html=True)
-
-            # Word status after answer
-            state = get_word_state(st.session_state.data, q["word"])
-            status_map = {
-                "new": "<span class='badge-new'>🔵 ใหม่</span>",
-                "learning": "<span class='badge-learn'>🟡 กำลังเรียน</span>",
-                "known": "<span class='badge-known'>🟢 จำได้แล้ว</span>"
-            }
-            st.markdown(f"สถานะคำนี้: {status_map.get(state['status'], '')}", unsafe_allow_html=True)
-
-            st.markdown("")
-            if st.button("➡️ คำต่อไป", type="primary", use_container_width=True):
-                st.session_state.question = None
-                st.rerun()
-
-# ─────────────────────────────────────────────
-# PAGE: Dashboard
-# ─────────────────────────────────────────────
-elif page == "📊 Dashboard":
-    st.markdown("# 📊 Dashboard")
-    stats = get_stats(st.session_state.data)
-
-    # Top stats row
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"""
-        <div class='card' style='text-align:center'>
-            <div class='stat-number'>{stats['total']}</div>
-            <div class='stat-label'>คำทั้งหมด</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""
-        <div class='card' style='text-align:center; border-color:#34d399'>
-            <div class='stat-number' style='color:#34d399'>{stats['known']}</div>
-            <div class='stat-label'>จำได้แล้ว 🟢</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""
-        <div class='card' style='text-align:center; border-color:#fbbf24'>
-            <div class='stat-number' style='color:#fbbf24'>{stats['learning']}</div>
-            <div class='stat-label'>กำลังเรียน 🟡</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c4:
-        st.markdown(f"""
-        <div class='card' style='text-align:center; border-color:#f472b6'>
-            <div class='stat-number' style='color:#f472b6'>{stats['streak']} 🔥</div>
-            <div class='stat-label'>Streak รายวัน</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("")
-
-    # Daily activity chart
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        st.markdown("### 📈 กิจกรรม 14 วันที่ผ่านมา")
-        daily = stats["daily"]
-        if any(d["seen"] > 0 for d in daily):
-            df = pd.DataFrame(daily)
-            df["date_short"] = pd.to_datetime(df["date"]).dt.strftime("%d/%m")
-
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=df["date_short"], y=df["seen"],
-                name="คำที่เห็น", marker_color="#2a3060"
-            ))
-            fig.add_trace(go.Bar(
-                x=df["date_short"], y=df["correct"],
-                name="ตอบถูก", marker_color="#7c9eff"
-            ))
-            fig.update_layout(
-                barmode="overlay",
-                plot_bgcolor="#0d0f14",
-                paper_bgcolor="#13151c",
-                font_color="#a0a8c0",
-                legend=dict(bgcolor="#13151c"),
-                margin=dict(l=0, r=0, t=10, b=0),
-                height=250,
-                xaxis=dict(gridcolor="#1e2130"),
-                yaxis=dict(gridcolor="#1e2130"),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.markdown("<div class='card' style='color:#6b7494; text-align:center; padding:40px'>ยังไม่มีข้อมูล เริ่มเล่นก่อนเลย! 🎮</div>", unsafe_allow_html=True)
-
-    with col_right:
-        st.markdown("### 🔴 คำที่ยังบกพร่อง")
-        weak = get_weak_words(st.session_state.data)
-        if weak:
-            for w in weak:
-                wrong_pct = round(w["total_wrong"] / w["total_seen"] * 100) if w["total_seen"] > 0 else 0
-                st.markdown(f"""
-                <div style='background:#1a1d2e; border-radius:10px; padding:10px 14px; margin-bottom:8px; border-left:3px solid #f87171'>
-                    <b style='color:#c8cfe8'>{w['word']}</b>
-                    <span style='color:#6b7494; font-size:0.85rem'> — {w.get('word_th','')}</span><br>
-                    <small style='color:#f87171'>ผิด {w['total_wrong']} ครั้ง ({wrong_pct}%)</small>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.markdown("<div class='card' style='color:#6b7494; text-align:center; padding:30px'>ยังไม่มีคำที่ผิดบ่อย 🎉</div>", unsafe_allow_html=True)
-
-    # Word list
-    st.markdown("### 📚 คำทั้งหมดที่เรียนแล้ว")
-    all_words = list(st.session_state.data["words"].values())
-    if all_words:
-        df_words = pd.DataFrame(all_words)[["word", "word_th", "status", "repetitions", "total_seen", "total_wrong", "next_review"]]
-        df_words.columns = ["คำ", "ความหมาย", "สถานะ", "ตอบถูกติดต่อกัน", "เห็นทั้งหมด", "ผิดทั้งหมด", "Review ครั้งต่อไป"]
-        status_th = {"new": "🔵 ใหม่", "learning": "🟡 กำลังเรียน", "known": "🟢 จำได้แล้ว"}
-        df_words["สถานะ"] = df_words["สถานะ"].map(status_th)
-        st.dataframe(df_words, use_container_width=True, hide_index=True)
+                    else:
+                        update_srs(qz['id'], False)
+                        st.error(f"Incorrect! Back to typing: '{qz['word']}'")
+                        time.sleep(2)
+                        st.session_state.phase = "typing"
+                        st.session_state.idx = 0
+                        st.session_state.quiz_idx = 0
+                        st.rerun()
     else:
-        st.markdown("<div class='card' style='color:#6b7494; text-align:center; padding:40px'>ยังไม่มีคำในคลัง ไปเล่นก่อนเลย! 🎮</div>", unsafe_allow_html=True)
+        st.info("No words due. You can unlock new words in the Vault or wait for tomorrow!")
+        if st.button("Unlock 5 New Words"):
+            new_words = ["Challenge", "Prosper", "Vibrant", "Obscure", "Tenacious"]
+            c = conn.cursor()
+            for nw in new_words:
+                api = fetch_word_data(nw)
+                if api:
+                    c.execute("INSERT OR IGNORE INTO vocab (word, pos, pronunciation, translation, example, level, next_review) VALUES (?,?,?,?,?,?,?)",
+                              (nw, api['pos'], api['pronunciation'], "รอแปล", api['example'], "B2", today))
+            conn.commit()
+            st.rerun()
+    conn.close()
+
+with tab2:
+    st.subheader("⭐ Your Starred Words")
+    conn = sqlite3.connect(DB_NAME)
+    df_fav = pd.read_sql_query("SELECT word, translation, level, mastery_score FROM vocab WHERE is_favorite = 1", conn)
+    conn.close()
+    if not df_fav.empty:
+        st.table(df_fav)
+    else:
+        st.write("No favorite words yet. Click the star during practice!")
+
+with tab3:
+    st.subheader("📊 Performance Analytics")
+    conn = sqlite3.connect(DB_NAME)
+    df_all = pd.read_sql_query("SELECT word, mastery_score FROM vocab", conn)
+    conn.close()
+    if not df_all.empty:
+        fig = px.bar(df_all, x='word', y='mastery_score', color='mastery_score', title="Vocabulary Mastery")
+        st.plotly_chart(fig, use_container_width=True)
+
+with tab4:
+    st.subheader("🛡️ Lexicon Vault")
+    conn = sqlite3.connect(DB_NAME)
+    df_v = pd.read_sql_query("SELECT id, word, translation, level, next_review FROM vocab", conn)
+    st.dataframe(df_v, use_container_width=True)
+    
+    if st.button("Clear Database (Reset)"):
+        c = conn.cursor()
+        c.execute("DROP TABLE IF EXISTS vocab")
+        conn.commit()
+        st.rerun()
+    conn.close()
